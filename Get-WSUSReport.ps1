@@ -33,7 +33,7 @@ catch {
 
 $body = "";
 $computerScope = new-object Microsoft.UpdateServices.Administration.ComputerTargetScope
-$updateScope = New-Object Microsoft.UpdateServices.Administration.updateScope
+$updateScope = New-Object Microsoft.UpdateServices.Administration.UpdateScope
 
 # Get failed updates report
 $updateScope.IncludedInstallationStates = [Microsoft.UpdateServices.Administration.UpdateInstallationStates]::Failed
