@@ -1,8 +1,12 @@
-$recipient = "WSUS Master <wsus.master@example.com>"
+$updateServer = "wsus.example.com"
+$updateServerSSL = $False
+$updateServerPort = 8530
 
-$server = "wsus01.example.com"
-$mailserver = "mail.example.com"
-$mailfrom = "WSUS report $(HOSTNAME) <wsusreport@example.com>"
+$reportRecipient = "WSUS Master <wsus.master@example.com>"
+$reportFrom = "WSUS report $(HOSTNAME) <wsusreport@example.com>"
+$mailServer = "mail.example.com"
+
+$reportFolder = "C:\Program Files\Scripts\Data"
 
 $bodycss = @"
 <style>
@@ -16,11 +20,11 @@ tr:nth-child(odd) { background: #e4e4e4; }
 </style>
 "@
 
-$starttime = Get-Date
+$startTime = Get-Date
 
 [void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
 try {
-    $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::getUpdateServer($server,$False,8530)
+    $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::getUpdateServer($updateServer,$updateServerSSL,$updateServerPort)
 }
 catch {
     Write-Error "Could not connect to WSUS: $_"
@@ -28,12 +32,12 @@ catch {
 }
 
 $body = "";
-$computerscope = new-object Microsoft.UpdateServices.Administration.ComputerTargetScope
-$updatescope = New-Object Microsoft.UpdateServices.Administration.UpdateScope
+$computerScope = new-object Microsoft.UpdateServices.Administration.ComputerTargetScope
+$updateScope = New-Object Microsoft.UpdateServices.Administration.updateScope
 
-# Get failed updates
-$updatescope.IncludedInstallationStates = [Microsoft.UpdateServices.Administration.UpdateInstallationStates]::Failed
-$outlist = $wsus.GetUpdates($updatescope) | %{ $_.GetUpdateInstallationInfoPerComputerTarget($computerscope) | ?{ $_.UpdateInstallationState -eq "Failed"} |
+# Get failed updates report
+$updateScope.IncludedInstallationStates = [Microsoft.UpdateServices.Administration.UpdateInstallationStates]::Failed
+$outList = $wsus.GetUpdates($updateScope) | %{ $_.GetUpdateInstallationInfoPerComputerTarget($computerScope) | ?{ $_.UpdateInstallationState -eq "Failed"} |
  Select-Object @{L="Computer"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).FullDomainName}},
  @{L="Update"; E={($wsus.GetUpdate([guid]$_.UpdateID)).Title}},
  @{L="Last error"; E={$compId = $_.ComputerTargetId; ($wsus.GetUpdateEventHistory((Get-Date).AddDays(-900), (Get-Date), [guid]$_.UpdateID, [Microsoft.UpdateServices.Administration.WsusEventSource]::Client, $null) | ?{ $_.ComputerId -eq $compId } | ?{ $_.IsError -eq $True -or $_.WsusEventId -eq "ClientDownloadCanceled" } | Select-Object -First 1).Message -replace "`n","" -replace "`r","" -replace 'Windows failed to install the following update with (error 0x[0-9a-f]*): .*$','$1'}},
@@ -41,32 +45,35 @@ $outlist = $wsus.GetUpdates($updatescope) | %{ $_.GetUpdateInstallationInfoPerCo
  @{L="First error time"; E={$compId = $_.ComputerTargetId; ($wsus.GetUpdateEventHistory((Get-Date).AddDays(-900), (Get-Date), [guid]$_.UpdateID, [Microsoft.UpdateServices.Administration.WsusEventSource]::Client, $null) | ?{ $_.ComputerId -eq $compId } | Select-Object -Last 1).CreationDate.ToString("s")}}
  } | Sort-Object -Property Computer
 
-$outfile = "C:\Program Files\Scripts\Data\WSUSReport-Failed-$(Get-Date -Format yyyy-MM-dd).csv"
-$outlist | Export-Csv -NoTypeInformation -Path $outfile
+$outFile = "$($reportFolder)\WSUSReport-Failed-$(Get-Date -Format yyyy-MM-dd).csv"
+$outList | Export-Csv -NoTypeInformation -Path $outFile
 
-$bodyraw = (Get-Content $outfile)
-$body += ConvertFrom-Csv $bodyraw | ConvertTo-Html -Head $bodycss -Body "<h1>WSUS report</h1><h2>Failed updates</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $starttime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
-
-# Get update status report
-$updatescope.IncludedInstallationStates = [Microsoft.UpdateServices.Administration.UpdateInstallationStates]::NotInstalled
+$bodyRaw = (Get-Content $outFile)
+$body += ConvertFrom-Csv $bodyRaw | ConvertTo-Html -Head $bodycss -Body "<h1>WSUS report</h1><h2>Failed updates</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $startTime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
 
 # Get computer status report
-$outlist = $wsus.GetSummariesPerComputerTarget($updatescope,$computerscope) | Select-Object @{L="Computer name"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).FullDomainName}},@{L="Unk"; E={$_.UnknownCount}},@{L="Need"; E={$_.NotInstalledCount}},@{L="D/L"; E={$_.DownloadedCount}},@{L="Inst"; E={$_.InstalledCount}},@{L="Pend"; E={$_.InstalledPendingRebootCount}},@{L="Fail"; E={$_.FailedCount}} | Sort-Object -Property "Need" -Descending
+$startTime = Get-Date
+$updateScope.IncludedInstallationStates = [Microsoft.UpdateServices.Administration.UpdateInstallationStates]::NotInstalled
 
-$outfile3 = "C:\Program Files\Scripts\Data\WSUSReport-Computers-$(Get-Date -Format yyyy-MM-dd).csv"
-$outlist | Export-Csv -NoTypeInformation -Path $outfile3
+$outList = $wsus.GetSummariesPerComputerTarget($updateScope,$computerScope) | Select-Object @{L="Computer name"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).FullDomainName}},@{L="OS Name"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).OSDescription -replace "Windows ","" -replace " Edition","" -replace " installation",""}},@{L="OS Version"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).ClientVersion}},@{L="Sync Time"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).LastSyncTime.ToString("s")}},@{L="Report Time"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).LastReportedStatusTime.ToString("s")}},@{L="Sync Result"; E={($wsus.GetComputerTarget([guid]$_.ComputerTargetId)).LastSyncResult}},@{L="Unk"; E={$_.UnknownCount}},@{L="Need"; E={$_.NotInstalledCount}},@{L="D/L"; E={$_.DownloadedCount}},@{L="Inst"; E={$_.InstalledCount}},@{L="Pend"; E={$_.InstalledPendingRebootCount}},@{L="Fail"; E={$_.FailedCount}} | Sort-Object -Property "Need" -Descending
 
-$bodyraw = (Get-Content $outfile3)
-$body += ConvertFrom-Csv $bodyraw | ConvertTo-Html -Head $bodycss -Body "<h2>Computer status</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $starttime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
+$outFile3 = "$($reportFolder)\WSUSReport-Computers-$(Get-Date -Format yyyy-MM-dd).csv"
+$outList | Export-Csv -NoTypeInformation -Path $outFile3
 
-# $outlist = wsus.GetUpdates($updatescope) | ?{ $_.IsApproved -eq $False -and $_.IsDeclined -eq $False } | Select ArrivalDate,Title,State,IsBeta,UpdateClassificationTitle,MsrcSeverity | ft
-$outlist = $wsus.GetSummariesPerUpdate($updatescope,$computerscope) | Select-Object @{L="Downloaded"; E={$_.LastUpdated.ToString("s")}},@{L="Update"; E={($wsus.GetUpdate([guid]$_.UpdateID)).Title}},@{L="Unk"; E={$_.UnknownCount}},@{L="N/A"; E={$_.NotApplicableCount}},@{L="Need"; E={$_.NotInstalledCount}},@{L="D/L"; E={$_.DownloadedCount}},@{L="Inst"; E={$_.InstalledCount}},@{L="Pend"; E={$_.InstalledPendingRebootCount}},@{L="Fail"; E={$_.FailedCount}} | Sort-Object -Property Downloaded -Descending
+$bodyRaw = (Get-Content $outFile3)
+$body += ConvertFrom-Csv $bodyRaw | ConvertTo-Html -Head $bodycss -Body "<h2>Computer status</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $startTime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
 
-$outfile2 = "C:\Program Files\Scripts\Data\WSUSReport-Updates-$(Get-Date -Format yyyy-MM-dd).csv"
-$outlist | Export-Csv -NoTypeInformation -Path $outfile2
+# Get update status report
+$startTime = Get-Date
 
-$bodyraw = (Get-Content $outfile2)
-$body += ConvertFrom-Csv $bodyraw | ConvertTo-Html -Head $bodycss -Body "<h2>Update status</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $starttime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
+# $outList = wsus.GetUpdates($updateScope) | ?{ $_.IsApproved -eq $False -and $_.IsDeclined -eq $False } | Select ArrivalDate,Title,State,IsBeta,UpdateClassificationTitle,MsrcSeverity | ft
+$outList = $wsus.GetSummariesPerUpdate($updateScope,$computerScope) | Select-Object @{L="Downloaded"; E={$_.LastUpdated.ToString("s")}},@{L="Update"; E={($wsus.GetUpdate([guid]$_.UpdateID)).Title}},@{L="Unk"; E={$_.UnknownCount}},@{L="N/A"; E={$_.NotApplicableCount}},@{L="Need"; E={$_.NotInstalledCount}},@{L="D/L"; E={$_.DownloadedCount}},@{L="Inst"; E={$_.InstalledCount}},@{L="Pend"; E={$_.InstalledPendingRebootCount}},@{L="Fail"; E={$_.FailedCount}} | Sort-Object -Property Downloaded -Descending
+
+$outFile2 = "$($reportFolder)\WSUSReport-Updates-$(Get-Date -Format yyyy-MM-dd).csv"
+$outList | Export-Csv -NoTypeInformation -Path $outFile2
+
+$bodyRaw = (Get-Content $outFile2)
+$body += ConvertFrom-Csv $bodyRaw | ConvertTo-Html -Head $bodycss -Body "<h2>Update status</h2>" -PostContent "<h6>Generated on $(Get-Date) in $(((Get-Date) - $startTime).TotalMilliseconds / 1000) seconds</h6>" | Out-String
 
 # and send the report
-Send-MailMessage -To $recipient -From $mailfrom -Subject "WSUS report for day $(Get-Date -Format FileDate) on $(HOSTNAME)" -SmtpServer $mailserver -Body $body -BodyAsHtml -Priority Low -Attachments @($outfile, $outfile2, $outfile3)
+Send-MailMessage -To $reportRecipient -From $reportFrom -Subject "WSUS report for day $(Get-Date -Format FileDate) on $(HOSTNAME)" -SmtpServer $mailServer -Body $body -BodyAsHtml -Priority Low -Attachments @($outFile, $outFile2, $outFile3)
